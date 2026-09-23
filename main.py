@@ -106,6 +106,22 @@ class FincaIn(BaseModel):
 def salud():
     return {"ok": True, "app": "Hato Sano API"}
 
+# ---------------- hoja de vida pública (sin login) ----------------
+@app.get("/publico/animal/{animal_id}")
+def publico_animal(animal_id: str):
+    with engine.begin() as con:
+        a = con.execute(text("SELECT id,finca_id,arete,nombre,tipo,sexo,categoria,foto_url,foto_url2,descripcion,peso_kg FROM hato.animales WHERE id=:a AND activo"),
+                        {"a": animal_id}).mappings().first()
+        if not a:
+            raise HTTPException(404, "Hoja de vida no encontrada")
+        fn = con.execute(text("SELECT nombre FROM hato.fincas WHERE id=:f"), {"f": a["finca_id"]}).scalar()
+        pes = con.execute(text("SELECT fecha,peso_kg FROM hato.pesajes WHERE animal_id=:a ORDER BY fecha"),
+                          {"a": animal_id}).mappings().all()
+        trs = con.execute(text("SELECT fecha,plaga,familia,producto,animal_id,retiro_dias,apta_venta FROM hato.tratamientos WHERE (animal_id=:a OR (animal_id IS NULL AND finca_id=:f)) ORDER BY fecha DESC"),
+                          {"a": animal_id, "f": a["finca_id"]}).mappings().all()
+    d = dict(a); d.pop("finca_id", None)
+    return {"animal": d, "finca": fn, "pesajes": [dict(x) for x in pes], "tratamientos": [dict(x) for x in trs]}
+
 # ---------------- finca (caracterización) ----------------
 @app.get("/finca")
 def get_finca(u=Depends(usuario_actual)):
