@@ -24,6 +24,12 @@ JWT_ALG = "HS256"
 TOKEN_HORAS = 24 * 30                                   # sesión de 30 días
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+# migración idempotente: columna para la segunda foto del animal
+try:
+    with engine.begin() as _con:
+        _con.execute(text("ALTER TABLE hato.animales ADD COLUMN IF NOT EXISTS foto_url2 text"))
+except Exception as _e:
+    print("migracion foto_url2:", _e)
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()   # el token se manda como  Authorization: Bearer <token>
 
@@ -70,6 +76,7 @@ class AnimalIn(BaseModel):
     sexo: Optional[str] = None
     categoria: Optional[str] = None
     foto_url: Optional[str] = None
+    foto_url2: Optional[str] = None
     descripcion: Optional[str] = None
     peso_kg: Optional[float] = None
 
@@ -128,10 +135,10 @@ def listar_animales(u=Depends(usuario_actual)):
 def crear_animal(a: AnimalIn, u=Depends(usuario_actual)):
     with engine.begin() as con:
         aid = con.execute(text("""INSERT INTO hato.animales
-              (finca_id,arete,nombre,tipo,sexo,categoria,foto_url,descripcion,peso_kg)
-              VALUES(:f,:arete,:nombre,:tipo,:sexo,:cat,:foto,:desc,:peso) RETURNING id"""),
+              (finca_id,arete,nombre,tipo,sexo,categoria,foto_url,foto_url2,descripcion,peso_kg)
+              VALUES(:f,:arete,:nombre,:tipo,:sexo,:cat,:foto,:foto2,:desc,:peso) RETURNING id"""),
               {"f": u["finca_id"], "arete": a.arete, "nombre": a.nombre, "tipo": a.tipo, "sexo": a.sexo,
-               "cat": a.categoria, "foto": a.foto_url, "desc": a.descripcion, "peso": a.peso_kg}).scalar()
+               "cat": a.categoria, "foto": a.foto_url, "foto2": a.foto_url2, "desc": a.descripcion, "peso": a.peso_kg}).scalar()
     return {"id": str(aid)}
 
 @app.put("/animales/{animal_id}")
@@ -140,10 +147,10 @@ def editar_animal(animal_id: str, a: AnimalIn, u=Depends(usuario_actual)):
         _animal_de_finca(con, animal_id, u["finca_id"])
         con.execute(text("""UPDATE hato.animales SET
               arete=:arete,nombre=:nombre,tipo=:tipo,sexo=:sexo,categoria=:cat,
-              foto_url=:foto,descripcion=:desc,peso_kg=COALESCE(:peso,peso_kg),actualizado_en=now()
+              foto_url=:foto,foto_url2=:foto2,descripcion=:desc,peso_kg=COALESCE(:peso,peso_kg),actualizado_en=now()
               WHERE id=:id AND finca_id=:f"""),
               {"id": animal_id, "f": u["finca_id"], "arete": a.arete, "nombre": a.nombre, "tipo": a.tipo,
-               "sexo": a.sexo, "cat": a.categoria, "foto": a.foto_url, "desc": a.descripcion, "peso": a.peso_kg})
+               "sexo": a.sexo, "cat": a.categoria, "foto": a.foto_url, "foto2": a.foto_url2, "desc": a.descripcion, "peso": a.peso_kg})
     return {"ok": True}
 
 @app.delete("/animales/{animal_id}")
