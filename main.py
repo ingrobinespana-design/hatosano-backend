@@ -28,8 +28,9 @@ engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 try:
     with engine.begin() as _con:
         _con.execute(text("ALTER TABLE hato.animales ADD COLUMN IF NOT EXISTS foto_url2 text"))
+        _con.execute(text("ALTER TABLE hato.fincas ADD COLUMN IF NOT EXISTS caracterizacion text"))
 except Exception as _e:
-    print("migracion foto_url2:", _e)
+    print("migracion:", _e)
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()   # el token se manda como  Authorization: Bearer <token>
 
@@ -95,10 +96,32 @@ class TratamientoIn(BaseModel):
     dosis: Optional[str] = None
     retiro_dias: int = 0
 
+class FincaIn(BaseModel):
+    municipio: Optional[str] = None
+    area_ha: Optional[float] = None
+    caracterizacion: Optional[str] = None   # JSON en texto
+
 # ---------------- salud ----------------
 @app.get("/")
 def salud():
     return {"ok": True, "app": "Hato Sano API"}
+
+# ---------------- finca (caracterización) ----------------
+@app.get("/finca")
+def get_finca(u=Depends(usuario_actual)):
+    with engine.begin() as con:
+        row = con.execute(text("SELECT id,nombre,municipio,vereda,area_ha,plan,caracterizacion FROM hato.fincas WHERE id=:f"),
+                          {"f": u["finca_id"]}).mappings().first()
+    return dict(row) if row else {}
+
+@app.put("/finca")
+def put_finca(d: FincaIn, u=Depends(usuario_actual)):
+    with engine.begin() as con:
+        con.execute(text("""UPDATE hato.fincas SET
+              municipio=COALESCE(:m,municipio), area_ha=COALESCE(:a,area_ha), caracterizacion=COALESCE(:c,caracterizacion)
+              WHERE id=:f"""),
+              {"m": d.municipio, "a": d.area_ha, "c": d.caracterizacion, "f": u["finca_id"]})
+    return {"ok": True}
 
 # ---------------- autenticación ----------------
 @app.post("/auth/registro")
