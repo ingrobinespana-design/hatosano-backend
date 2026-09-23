@@ -9,7 +9,7 @@ from typing import Optional
 
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text
 from passlib.context import CryptContext
@@ -25,7 +25,7 @@ TOKEN_HORAS = 24 * 30                                   # sesión de 30 días
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2 = OAuth2PasswordBearer(tokenUrl="auth/login")
+security = HTTPBearer()   # el token se manda como  Authorization: Bearer <token>
 
 app = FastAPI(title="Hato Sano API", version="0.1.0")
 app.add_middleware(
@@ -39,9 +39,9 @@ def crear_token(usuario_id, finca_id) -> str:
     exp = datetime.utcnow() + timedelta(hours=TOKEN_HORAS)
     return jwt.encode({"sub": str(usuario_id), "finca": str(finca_id), "exp": exp}, JWT_SECRET, algorithm=JWT_ALG)
 
-def usuario_actual(token: str = Depends(oauth2)) -> dict:
+def usuario_actual(cred: HTTPAuthorizationCredentials = Depends(security)) -> dict:
     try:
-        data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        data = jwt.decode(cred.credentials, JWT_SECRET, algorithms=[JWT_ALG])
     except Exception:
         raise HTTPException(401, "Sesión inválida o expirada")
     return {"usuario_id": data["sub"], "finca_id": data["finca"]}
