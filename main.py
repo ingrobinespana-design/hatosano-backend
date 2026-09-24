@@ -286,6 +286,7 @@ class TratamientoIn(BaseModel):
     retiro_dias: int = 0
 
 class FincaIn(BaseModel):
+    nombre: Optional[str] = None
     municipio: Optional[str] = None
     area_ha: Optional[float] = None
     caracterizacion: Optional[str] = None   # JSON en texto
@@ -340,9 +341,10 @@ def get_finca(u=Depends(usuario_actual)):
 def put_finca(d: FincaIn, u=Depends(usuario_escritura)):
     with engine.begin() as con:
         con.execute(text("""UPDATE hato.fincas SET
-              municipio=COALESCE(:m,municipio), area_ha=COALESCE(:a,area_ha), caracterizacion=COALESCE(:c,caracterizacion)
+              nombre=COALESCE(NULLIF(:n,''),nombre), municipio=COALESCE(:m,municipio),
+              area_ha=COALESCE(:a,area_ha), caracterizacion=COALESCE(:c,caracterizacion)
               WHERE id=:f"""),
-              {"m": d.municipio, "a": d.area_ha, "c": d.caracterizacion, "f": u["finca_id"]})
+              {"n": d.nombre, "m": d.municipio, "a": d.area_ha, "c": d.caracterizacion, "f": u["finca_id"]})
     return {"ok": True}
 
 # ---------------- autenticación ----------------
@@ -630,6 +632,16 @@ def admin_activar(d: ActivarIn, _=Depends(_admin)):
         con.execute(text("UPDATE hato.fincas SET pago_hasta=:p,estado_suscripcion='activa',plan='pro' WHERE id=:f"),
                     {"p": nuevo, "f": fid})
     return {"ok": True, "finca_id": str(fid), "pago_hasta": str(nuevo)}
+
+class RenombrarIn(BaseModel):
+    finca_id: str
+    nombre: str
+
+@app.post("/admin/renombrar-finca")
+def admin_renombrar(d: RenombrarIn, _=Depends(_admin)):
+    with engine.begin() as con:
+        con.execute(text("UPDATE hato.fincas SET nombre=:n WHERE id=:f"), {"n": d.nombre.strip(), "f": d.finca_id})
+    return {"ok": True, "nombre": d.nombre.strip()}
 
 @app.post("/admin/verificar-correo")
 def admin_verificar_correo(d: EmailIn, _=Depends(_admin)):
