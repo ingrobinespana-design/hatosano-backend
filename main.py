@@ -528,3 +528,35 @@ def admin_verificar_correo(d: EmailIn, _=Depends(_admin)):
         con.execute(text("UPDATE hato.usuarios SET email_verificado=true,verif_token=NULL,verif_expira=NULL WHERE lower(email)=:e"),
                     {"e": d.email.strip().lower()})
     return {"ok": True}
+
+@app.post("/admin/test-email")
+def admin_test_email(d: EmailIn, _=Depends(_admin)):
+    """Diagnóstico: intenta enviar un correo y devuelve el error exacto (si falla)."""
+    destino = (d.email or SMTP_USER or "").strip()
+    info = {"via": "resend" if RESEND_API_KEY else ("smtp" if (SMTP_USER and SMTP_PASS) else "ninguno"),
+            "smtp_host": SMTP_HOST, "smtp_port": SMTP_PORT, "from": FROM_EMAIL,
+            "smtp_user_set": bool(SMTP_USER), "pass_len": len(SMTP_PASS), "destino": destino}
+    html = _correo_html("Prueba de correo", "Hola,", "Si recibes esto, el envío de Hato Sano funciona.", "Todo bien", APP_URL)
+    if not destino:
+        info["ok"] = False; info["error"] = "sin destino"; return info
+    if RESEND_API_KEY:
+        try:
+            req = urllib.request.Request("https://api.resend.com/emails",
+                data=json.dumps({"from": f"{FROM_NOMBRE} <{FROM_EMAIL}>", "to": [destino], "subject": "Prueba — Hato Sano", "html": html}).encode(),
+                headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"}, method="POST")
+            r = urllib.request.urlopen(req, timeout=15).read().decode()
+            info["ok"] = True; info["resp"] = r[:300]; return info
+        except Exception as e:
+            info["ok"] = False; info["error"] = f"resend: {type(e).__name__}: {e}"; return info
+    if SMTP_USER and SMTP_PASS:
+        try:
+            msg = EmailMessage()
+            msg["Subject"] = "Prueba — Hato Sano"; msg["From"] = f"{FROM_NOMBRE} <{FROM_EMAIL}>"; msg["To"] = destino
+            msg.set_content("Prueba de correo Hato Sano."); msg.add_alternative(html, subtype="html")
+            ctx = ssl.create_default_context()
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as s:
+                s.starttls(context=ctx); s.login(SMTP_USER, SMTP_PASS); s.send_message(msg)
+            info["ok"] = True; return info
+        except Exception as e:
+            info["ok"] = False; info["error"] = f"smtp: {type(e).__name__}: {e}"; return info
+    info["ok"] = False; info["error"] = "email no configurado"; return info
