@@ -245,6 +245,18 @@ class ActivarIn(BaseModel):
     email: Optional[str] = None
     meses: int = 1
 
+class AdminVacIn(BaseModel):
+    finca_id: str
+    fecha: date
+    tipo: Optional[str] = None
+    lote: Optional[str] = None
+    ciclo: Optional[str] = None
+    todo_hato: bool = True
+    num_animales: Optional[int] = None
+    vacunador: Optional[str] = None
+    proxima: Optional[date] = None
+    notas: Optional[str] = None
+
 class AnimalIn(BaseModel):
     arete: Optional[str] = None
     nombre: Optional[str] = None
@@ -622,6 +634,25 @@ def admin_verificar_correo(d: EmailIn, _=Depends(_admin)):
         con.execute(text("UPDATE hato.usuarios SET email_verificado=true,verif_token=NULL,verif_expira=NULL WHERE lower(email)=:e"),
                     {"e": d.email.strip().lower()})
     return {"ok": True}
+
+@app.post("/admin/vacunaciones")
+def admin_crear_vacunacion(v: AdminVacIn, _=Depends(_admin)):
+    """Carga administrativa de vacunaciones (p. ej. importar RUV del ICA a una finca)."""
+    with engine.begin() as con:
+        vid = con.execute(text("""INSERT INTO hato.vacunaciones
+              (finca_id,fecha,tipo,lote,ciclo,todo_hato,num_animales,vacunador,proxima,notas)
+              VALUES(:f,:fe,:tipo,:lote,:ciclo,:todo,:num,:vac,:prox,:notas) RETURNING id"""),
+              {"f": v.finca_id, "fe": v.fecha, "tipo": v.tipo, "lote": v.lote, "ciclo": v.ciclo,
+               "todo": v.todo_hato, "num": v.num_animales, "vac": v.vacunador,
+               "prox": v.proxima, "notas": v.notas}).scalar()
+    return {"id": str(vid)}
+
+@app.get("/admin/vacunaciones")
+def admin_listar_vacunaciones(finca_id: str, _=Depends(_admin)):
+    with engine.begin() as con:
+        rows = con.execute(text("SELECT fecha,tipo,lote,ciclo,num_animales,vacunador FROM hato.vacunaciones WHERE finca_id=:f ORDER BY fecha DESC"),
+                           {"f": finca_id}).mappings().all()
+    return [dict(r) for r in rows]
 
 @app.post("/admin/test-email")
 def admin_test_email(d: EmailIn, _=Depends(_admin)):
