@@ -49,6 +49,30 @@ FROM_EMAIL = os.environ.get("FROM_EMAIL", SMTP_USER or "no-reply@hatosano.app")
 FROM_NOMBRE = os.environ.get("FROM_NOMBRE", "Hato Sano")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "")   # API HTTP: Render BLOQUEA el SMTP saliente
+
+# ----- IA (Claude API) — se activa poniendo ANTHROPIC_API_KEY en Render -----
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+IA_MODELO_DESC = os.environ.get("IA_MODELO_DESC", "claude-haiku-4-5")      # descripciones (barato)
+IA_MODELO_CONSULTA = os.environ.get("IA_MODELO_CONSULTA", "claude-sonnet-5")  # consultas de salud (mejor)
+IA_CONFIGURADA = bool(ANTHROPIC_API_KEY)
+_ia_cliente = None
+def _ia_client():
+    global _ia_cliente
+    if not IA_CONFIGURADA:
+        return None
+    if _ia_cliente is None:
+        import anthropic
+        _ia_cliente = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    return _ia_cliente
+def _img_block(dataurl):
+    try:
+        head, b64 = dataurl.split(",", 1)
+        mt = head.split(";")[0].split(":")[1] or "image/jpeg"
+        if mt not in ("image/jpeg", "image/png", "image/webp", "image/gif"):
+            mt = "image/jpeg"
+        return {"type": "image", "source": {"type": "base64", "media_type": mt, "data": b64}}
+    except Exception:
+        return None
 USAR_SMTP = os.environ.get("USAR_SMTP", "") == "1"    # SMTP no funciona en Render; opt-in para otros hosts
 # La verificación de correo solo se EXIGE si hay un proveedor que realmente entregue.
 # En Render el SMTP está bloqueado, así que SMTP solo cuenta con USAR_SMTP=1 (otro host).
@@ -305,10 +329,23 @@ class VacunacionIn(BaseModel):
     notas: Optional[str] = None
     certificado_url: Optional[str] = None # PDF/foto del certificado ICA (Cloudinary)
 
+class DescribirIn(BaseModel):
+    foto: Optional[str] = None       # dataURL
+    foto2: Optional[str] = None
+    tipo: Optional[str] = None
+    sexo: Optional[str] = None
+    categoria: Optional[str] = None
+    peso_kg: Optional[float] = None
+
+class ConsultaIn(BaseModel):
+    pregunta: str
+    foto: Optional[str] = None        # dataURL (opcional)
+    contexto: Optional[str] = None    # datos del animal (opcional)
+
 # ---------------- salud ----------------
 @app.get("/")
 def salud():
-    return {"ok": True, "app": "Hato Sano API", "email": EMAIL_CONFIGURADO}
+    return {"ok": True, "app": "Hato Sano API", "email": EMAIL_CONFIGURADO, "ia": IA_CONFIGURADA}
 
 # ---------------- hoja de vida pública (sin login) ----------------
 @app.get("/publico/animal/{animal_id}")
@@ -590,6 +627,65 @@ def borrar_vacunacion(vac_id: str, u=Depends(usuario_actual)):
         con.execute(text("DELETE FROM hato.vacunaciones WHERE id=:id AND finca_id=:f"),
                     {"id": vac_id, "f": u["finca_id"]})
     return {"ok": True}
+
+# ---------------- IA (asesor + descripciones) ----------------
+@app.post("/ia/describir")
+def ia_describir(d: DescribirIn, u=Depends(usuario_actual)):
+    cl = _ia_client()
+    if not cl:
+        raise HTTPException(400, "La IA aún no está activada. Configura ANTHROPIC_API_KEY en el servidor.")
+    datos = ", ".join([x for x in [d.tipo, d.sexo, d.categoria, (str(d.peso_kg) + " kg" if d.peso_kg else None)] if x]) or "sin datos"
+    content = []
+    for f in [d.foto, d.foto2]:
+        if f:
+            b = _img_block(f)
+            if b:
+                content.append(b)
+    content.append({"type": "text", "text": "Describe este animal para una publicación de venta ganadera. Datos: " + datos + ". Máximo 2 frases, español sencillo, resalta lo positivo; no inventes datos que no se vean en la foto."})
+    try:
+        m = cl.messages.create(
+            model=IA_MODELO_DESC, max_tokens=250,
+            system="Eres un experto ganadero colombiano que escribe descripciones breves y atractivas para vender animales. Español sencillo y honesto. No inventes.",
+            messages=[{"role": "user", "content": content}],
+        )
+        txt = "".join([b.text for b in m.content if b.type == "text"]).strip()
+        return {"descripcion": txt}
+    except Exception as e:
+        raise HTTPException(502, "No se pudo generar la descripción: " + str(e)[:180])
+
+@app.post("/ia/consultar")
+def ia_consultar(d: ConsultaIn, u=Depends(usuario_actual)):
+    cl = _ia_client()
+    if not cl:
+        raise HTTPException(400, "La IA aún no está activada. Configura ANTHROPIC_API_KEY en el servidor.")
+    content = []
+    if d.foto:
+        b = _img_block(d.foto)
+        if b:
+            content.append(b)
+    pregunta = (d.pregunta or "").strip()
+    if not pregunta:
+        raise HTTPException(400, "Escribe tu pregunta.")
+    if d.contexto:
+        pregunta = "[Animal: " + d.contexto + "] " + pregunta
+    content.append({"type": "text", "text": pregunta})
+    sistema = ("Eres un asesor pecuario práctico para ganaderos de zonas rurales de Colombia (Putumayo, clima cálido) "
+        "donde es difícil conseguir veterinario. Das ORIENTACIÓN y primeros auxilios en pasos claros y numerados, "
+        "en español sencillo de campo. REGLAS OBLIGATORIAS: "
+        "(1) Si es una urgencia o algo grave, dilo CLARO al inicio y recomienda llamar al veterinario/ICA cuanto antes. "
+        "(2) Termina SIEMPRE recordando que es una orientación y NO reemplaza al veterinario ni al ICA. "
+        "(3) No inventes; si no estás seguro con lo que ves, dilo. "
+        "(4) Si mencionas medicamentos, recuerda respetar el periodo de retiro de carne/leche antes de vender. "
+        "(5) Sé breve, concreto y accionable.")
+    try:
+        m = cl.messages.create(
+            model=IA_MODELO_CONSULTA, max_tokens=900, system=sistema,
+            messages=[{"role": "user", "content": content}],
+        )
+        txt = "".join([b.text for b in m.content if b.type == "text"]).strip()
+        return {"respuesta": txt}
+    except Exception as e:
+        raise HTTPException(502, "No se pudo consultar: " + str(e)[:180])
 
 # ---------------- panel admin (activación manual por pago Nequi) ----------------
 @app.get("/admin/fincas")
