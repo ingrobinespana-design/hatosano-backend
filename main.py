@@ -76,6 +76,24 @@ _MIGRACIONES = [
     "ALTER TABLE hato.usuarios ADD COLUMN IF NOT EXISTS reset_expira timestamptz",
     "ALTER TABLE hato.usuarios ADD COLUMN IF NOT EXISTS intentos integer NOT NULL DEFAULT 0",
     "ALTER TABLE hato.usuarios ADD COLUMN IF NOT EXISTS bloqueado_hasta timestamptz",
+    # vacunación oficial (ICA): registro con trazabilidad + firma del vacunador
+    """CREATE TABLE IF NOT EXISTS hato.vacunaciones (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        finca_id uuid NOT NULL REFERENCES hato.fincas(id) ON DELETE CASCADE,
+        fecha date NOT NULL,
+        tipo text,
+        lote text,
+        ciclo text,
+        todo_hato boolean NOT NULL DEFAULT true,
+        num_animales integer,
+        animal_ids jsonb,
+        vacunador text,
+        firma text,
+        proxima date,
+        notas text,
+        creado_en timestamptz NOT NULL DEFAULT now()
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_vac_finca ON hato.vacunaciones(finca_id)",
 ]
 try:
     with engine.begin() as _con:
@@ -257,6 +275,19 @@ class FincaIn(BaseModel):
     municipio: Optional[str] = None
     area_ha: Optional[float] = None
     caracterizacion: Optional[str] = None   # JSON en texto
+
+class VacunacionIn(BaseModel):
+    fecha: date
+    tipo: Optional[str] = None            # aftosa | brucelosis | rabia | otra
+    lote: Optional[str] = None            # lote/serial de la vacuna (trazabilidad)
+    ciclo: Optional[str] = None           # ciclo ICA (ej. "Primer ciclo 2026")
+    todo_hato: bool = True
+    num_animales: Optional[int] = None
+    animal_ids: Optional[list] = None
+    vacunador: Optional[str] = None
+    firma: Optional[str] = None           # firma digital (dataURL)
+    proxima: Optional[date] = None
+    notas: Optional[str] = None
 
 # ---------------- salud ----------------
 @app.get("/")
@@ -489,11 +520,58 @@ def crear_tratamiento(t: TratamientoIn, u=Depends(usuario_escritura)):
                "apta": apta_venta, "prox": proxima}).scalar()
     return {"id": str(tid), "apta_venta": apta_venta, "proxima_dosis": proxima}
 
+@app.put("/tratamientos/{trat_id}")
+def editar_tratamiento(trat_id: str, t: TratamientoIn, u=Depends(usuario_actual)):
+    apta_venta = t.fecha + timedelta(days=t.retiro_dias) if t.retiro_dias > 0 else None
+    proxima = t.fecha + timedelta(days=365) if (t.plaga == "rabia") else None
+    with engine.begin() as con:
+        row = con.execute(text("SELECT id FROM hato.tratamientos WHERE id=:id AND finca_id=:f"),
+                          {"id": trat_id, "f": u["finca_id"]}).first()
+        if not row:
+            raise HTTPException(404, "Tratamiento no encontrado")
+        if t.animal_id:
+            _animal_de_finca(con, t.animal_id, u["finca_id"])
+        con.execute(text("""UPDATE hato.tratamientos SET
+              animal_id=:a,fecha=:fe,plaga=:plaga,familia=:fam,producto=:prod,activo=:act,
+              dosis=:dosis,retiro_dias=:ret,apta_venta=:apta,proxima_dosis=:prox
+              WHERE id=:id AND finca_id=:f"""),
+              {"id": trat_id, "f": u["finca_id"], "a": t.animal_id, "fe": t.fecha, "plaga": t.plaga,
+               "fam": t.familia, "prod": t.producto, "act": t.activo, "dosis": t.dosis,
+               "ret": t.retiro_dias, "apta": apta_venta, "prox": proxima})
+    return {"ok": True, "apta_venta": apta_venta, "proxima_dosis": proxima}
+
 @app.delete("/tratamientos/{trat_id}")
 def borrar_tratamiento(trat_id: str, u=Depends(usuario_actual)):
     with engine.begin() as con:
         con.execute(text("DELETE FROM hato.tratamientos WHERE id=:id AND finca_id=:f"),
                     {"id": trat_id, "f": u["finca_id"]})
+    return {"ok": True}
+
+# ---------------- vacunación oficial (ICA) ----------------
+@app.get("/vacunaciones")
+def listar_vacunaciones(u=Depends(usuario_actual)):
+    with engine.begin() as con:
+        rows = con.execute(text("SELECT * FROM hato.vacunaciones WHERE finca_id=:f ORDER BY fecha DESC"),
+                           {"f": u["finca_id"]}).mappings().all()
+    return [dict(r) for r in rows]
+
+@app.post("/vacunaciones")
+def crear_vacunacion(v: VacunacionIn, u=Depends(usuario_escritura)):
+    with engine.begin() as con:
+        vid = con.execute(text("""INSERT INTO hato.vacunaciones
+              (finca_id,fecha,tipo,lote,ciclo,todo_hato,num_animales,animal_ids,vacunador,firma,proxima,notas)
+              VALUES(:f,:fe,:tipo,:lote,:ciclo,:todo,:num,CAST(:aids AS jsonb),:vac,:firma,:prox,:notas) RETURNING id"""),
+              {"f": u["finca_id"], "fe": v.fecha, "tipo": v.tipo, "lote": v.lote, "ciclo": v.ciclo,
+               "todo": v.todo_hato, "num": v.num_animales,
+               "aids": json.dumps(v.animal_ids) if v.animal_ids else None,
+               "vac": v.vacunador, "firma": v.firma, "prox": v.proxima, "notas": v.notas}).scalar()
+    return {"id": str(vid)}
+
+@app.delete("/vacunaciones/{vac_id}")
+def borrar_vacunacion(vac_id: str, u=Depends(usuario_actual)):
+    with engine.begin() as con:
+        con.execute(text("DELETE FROM hato.vacunaciones WHERE id=:id AND finca_id=:f"),
+                    {"id": vac_id, "f": u["finca_id"]})
     return {"ok": True}
 
 # ---------------- panel admin (activación manual por pago Nequi) ----------------
