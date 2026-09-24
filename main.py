@@ -48,7 +48,11 @@ SMTP_PASS = os.environ.get("SMTP_PASS", "").replace(" ", "")   # Gmail muestra l
 FROM_EMAIL = os.environ.get("FROM_EMAIL", SMTP_USER or "no-reply@hatosano.app")
 FROM_NOMBRE = os.environ.get("FROM_NOMBRE", "Hato Sano")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
-EMAIL_CONFIGURADO = bool((SMTP_USER and SMTP_PASS) or RESEND_API_KEY)
+BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "")   # API HTTP: Render BLOQUEA el SMTP saliente
+USAR_SMTP = os.environ.get("USAR_SMTP", "") == "1"    # SMTP no funciona en Render; opt-in para otros hosts
+# La verificación de correo solo se EXIGE si hay un proveedor que realmente entregue.
+# En Render el SMTP está bloqueado, así que SMTP solo cuenta con USAR_SMTP=1 (otro host).
+EMAIL_CONFIGURADO = bool(BREVO_API_KEY or RESEND_API_KEY or (USAR_SMTP and SMTP_USER and SMTP_PASS))
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
@@ -95,6 +99,18 @@ def _enviar_email(destino: str, asunto: str, html: str) -> bool:
     """Envía un correo por Resend (si hay API key) o por SMTP (Gmail). Devuelve
     True si se envió. Si no hay nada configurado, devuelve False (no rompe nada)."""
     remitente = f"{FROM_NOMBRE} <{FROM_EMAIL}>"
+    if BREVO_API_KEY:
+        try:
+            req = urllib.request.Request(
+                "https://api.brevo.com/v3/smtp/email",
+                data=json.dumps({"sender": {"email": FROM_EMAIL, "name": FROM_NOMBRE}, "to": [{"email": destino}], "subject": asunto, "htmlContent": html}).encode(),
+                headers={"api-key": BREVO_API_KEY, "Content-Type": "application/json", "accept": "application/json"},
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=15).read()
+            return True
+        except Exception as e:
+            print("brevo error:", e)
     if RESEND_API_KEY:
         try:
             req = urllib.request.Request(
@@ -533,12 +549,26 @@ def admin_verificar_correo(d: EmailIn, _=Depends(_admin)):
 def admin_test_email(d: EmailIn, _=Depends(_admin)):
     """Diagnóstico: intenta enviar un correo y devuelve el error exacto (si falla)."""
     destino = (d.email or SMTP_USER or "").strip()
-    info = {"via": "resend" if RESEND_API_KEY else ("smtp" if (SMTP_USER and SMTP_PASS) else "ninguno"),
-            "smtp_host": SMTP_HOST, "smtp_port": SMTP_PORT, "from": FROM_EMAIL,
+    via = "brevo" if BREVO_API_KEY else ("resend" if RESEND_API_KEY else ("smtp" if (SMTP_USER and SMTP_PASS) else "ninguno"))
+    info = {"via": via, "smtp_host": SMTP_HOST, "smtp_port": SMTP_PORT, "from": FROM_EMAIL,
             "smtp_user_set": bool(SMTP_USER), "pass_len": len(SMTP_PASS), "destino": destino}
     html = _correo_html("Prueba de correo", "Hola,", "Si recibes esto, el envío de Hato Sano funciona.", "Todo bien", APP_URL)
     if not destino:
         info["ok"] = False; info["error"] = "sin destino"; return info
+    if BREVO_API_KEY:
+        try:
+            req = urllib.request.Request("https://api.brevo.com/v3/smtp/email",
+                data=json.dumps({"sender": {"email": FROM_EMAIL, "name": FROM_NOMBRE}, "to": [{"email": destino}], "subject": "Prueba — Hato Sano", "htmlContent": html}).encode(),
+                headers={"api-key": BREVO_API_KEY, "Content-Type": "application/json", "accept": "application/json"}, method="POST")
+            r = urllib.request.urlopen(req, timeout=15).read().decode()
+            info["ok"] = True; info["resp"] = r[:300]; return info
+        except Exception as e:
+            detalle = ""
+            try:
+                detalle = e.read().decode()[:300]
+            except Exception:
+                pass
+            info["ok"] = False; info["error"] = f"brevo: {type(e).__name__}: {e} {detalle}"; return info
     if RESEND_API_KEY:
         try:
             req = urllib.request.Request("https://api.resend.com/emails",
