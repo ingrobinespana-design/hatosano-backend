@@ -94,6 +94,7 @@ _MIGRACIONES = [
         creado_en timestamptz NOT NULL DEFAULT now()
     )""",
     "CREATE INDEX IF NOT EXISTS idx_vac_finca ON hato.vacunaciones(finca_id)",
+    "ALTER TABLE hato.vacunaciones ADD COLUMN IF NOT EXISTS certificado_url text",
 ]
 try:
     with engine.begin() as _con:
@@ -256,6 +257,7 @@ class AdminVacIn(BaseModel):
     vacunador: Optional[str] = None
     proxima: Optional[date] = None
     notas: Optional[str] = None
+    certificado_url: Optional[str] = None
 
 class AnimalIn(BaseModel):
     arete: Optional[str] = None
@@ -300,6 +302,7 @@ class VacunacionIn(BaseModel):
     firma: Optional[str] = None           # firma digital (dataURL)
     proxima: Optional[date] = None
     notas: Optional[str] = None
+    certificado_url: Optional[str] = None # PDF/foto del certificado ICA (Cloudinary)
 
 # ---------------- salud ----------------
 @app.get("/")
@@ -571,12 +574,12 @@ def listar_vacunaciones(u=Depends(usuario_actual)):
 def crear_vacunacion(v: VacunacionIn, u=Depends(usuario_escritura)):
     with engine.begin() as con:
         vid = con.execute(text("""INSERT INTO hato.vacunaciones
-              (finca_id,fecha,tipo,lote,ciclo,todo_hato,num_animales,animal_ids,vacunador,firma,proxima,notas)
-              VALUES(:f,:fe,:tipo,:lote,:ciclo,:todo,:num,CAST(:aids AS jsonb),:vac,:firma,:prox,:notas) RETURNING id"""),
+              (finca_id,fecha,tipo,lote,ciclo,todo_hato,num_animales,animal_ids,vacunador,firma,proxima,notas,certificado_url)
+              VALUES(:f,:fe,:tipo,:lote,:ciclo,:todo,:num,CAST(:aids AS jsonb),:vac,:firma,:prox,:notas,:cert) RETURNING id"""),
               {"f": u["finca_id"], "fe": v.fecha, "tipo": v.tipo, "lote": v.lote, "ciclo": v.ciclo,
                "todo": v.todo_hato, "num": v.num_animales,
                "aids": json.dumps(v.animal_ids) if v.animal_ids else None,
-               "vac": v.vacunador, "firma": v.firma, "prox": v.proxima, "notas": v.notas}).scalar()
+               "vac": v.vacunador, "firma": v.firma, "prox": v.proxima, "notas": v.notas, "cert": v.certificado_url}).scalar()
     return {"id": str(vid)}
 
 @app.delete("/vacunaciones/{vac_id}")
@@ -640,12 +643,25 @@ def admin_crear_vacunacion(v: AdminVacIn, _=Depends(_admin)):
     """Carga administrativa de vacunaciones (p. ej. importar RUV del ICA a una finca)."""
     with engine.begin() as con:
         vid = con.execute(text("""INSERT INTO hato.vacunaciones
-              (finca_id,fecha,tipo,lote,ciclo,todo_hato,num_animales,vacunador,proxima,notas)
-              VALUES(:f,:fe,:tipo,:lote,:ciclo,:todo,:num,:vac,:prox,:notas) RETURNING id"""),
+              (finca_id,fecha,tipo,lote,ciclo,todo_hato,num_animales,vacunador,proxima,notas,certificado_url)
+              VALUES(:f,:fe,:tipo,:lote,:ciclo,:todo,:num,:vac,:prox,:notas,:cert) RETURNING id"""),
               {"f": v.finca_id, "fe": v.fecha, "tipo": v.tipo, "lote": v.lote, "ciclo": v.ciclo,
                "todo": v.todo_hato, "num": v.num_animales, "vac": v.vacunador,
-               "prox": v.proxima, "notas": v.notas}).scalar()
+               "prox": v.proxima, "notas": v.notas, "cert": v.certificado_url}).scalar()
     return {"id": str(vid)}
+
+class CertIn(BaseModel):
+    finca_id: str
+    ruv: str
+    certificado_url: str
+
+@app.post("/admin/vacunacion-cert")
+def admin_set_cert(d: CertIn, _=Depends(_admin)):
+    """Adjunta el PDF del certificado a las vacunaciones de un RUV (por su nota)."""
+    with engine.begin() as con:
+        n = con.execute(text("UPDATE hato.vacunaciones SET certificado_url=:c WHERE finca_id=:f AND notas LIKE :pat"),
+                        {"c": d.certificado_url, "f": d.finca_id, "pat": "%RUV " + d.ruv + " %"}).rowcount
+    return {"ok": True, "actualizados": n}
 
 @app.get("/admin/vacunaciones")
 def admin_listar_vacunaciones(finca_id: str, _=Depends(_admin)):
