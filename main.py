@@ -384,7 +384,7 @@ def put_finca(d: FincaIn, u=Depends(usuario_escritura)):
         con.execute(text("""UPDATE hato.fincas SET
               nombre=COALESCE(NULLIF(:n,''),nombre), municipio=COALESCE(:m,municipio),
               area_ha=COALESCE(:a,area_ha), caracterizacion=COALESCE(:c,caracterizacion),
-              logo_url=COALESCE(:logo,logo_url)
+              logo_url=:logo
               WHERE id=:f"""),
               {"n": d.nombre, "m": d.municipio, "a": d.area_ha, "c": d.caracterizacion, "logo": d.logo_url, "f": u["finca_id"]})
     return {"ok": True}
