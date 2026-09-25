@@ -84,6 +84,7 @@ engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 _MIGRACIONES = [
     "ALTER TABLE hato.animales ADD COLUMN IF NOT EXISTS foto_url2 text",
     "ALTER TABLE hato.fincas ADD COLUMN IF NOT EXISTS caracterizacion text",
+    "ALTER TABLE hato.fincas ADD COLUMN IF NOT EXISTS logo_url text",
     # suscripción
     "ALTER TABLE hato.fincas ADD COLUMN IF NOT EXISTS estado_suscripcion text NOT NULL DEFAULT 'trial'",
     "ALTER TABLE hato.fincas ADD COLUMN IF NOT EXISTS trial_fin date",
@@ -314,6 +315,7 @@ class FincaIn(BaseModel):
     municipio: Optional[str] = None
     area_ha: Optional[float] = None
     caracterizacion: Optional[str] = None   # JSON en texto
+    logo_url: Optional[str] = None          # logo de la finca (para el membrete de informes)
 
 class VacunacionIn(BaseModel):
     fecha: date
@@ -355,19 +357,21 @@ def publico_animal(animal_id: str):
                         {"a": animal_id}).mappings().first()
         if not a:
             raise HTTPException(404, "Hoja de vida no encontrada")
-        fn = con.execute(text("SELECT nombre FROM hato.fincas WHERE id=:f"), {"f": a["finca_id"]}).scalar()
+        fnr = con.execute(text("SELECT nombre,logo_url FROM hato.fincas WHERE id=:f"), {"f": a["finca_id"]}).mappings().first()
+        fn = fnr["nombre"] if fnr else None
+        finca_logo = fnr["logo_url"] if fnr else None
         pes = con.execute(text("SELECT fecha,peso_kg FROM hato.pesajes WHERE animal_id=:a ORDER BY fecha"),
                           {"a": animal_id}).mappings().all()
         trs = con.execute(text("SELECT fecha,plaga,familia,producto,animal_id,retiro_dias,apta_venta FROM hato.tratamientos WHERE (animal_id=:a OR (animal_id IS NULL AND finca_id=:f)) ORDER BY fecha DESC"),
                           {"a": animal_id, "f": a["finca_id"]}).mappings().all()
     d = dict(a); d.pop("finca_id", None)
-    return {"animal": d, "finca": fn, "pesajes": [dict(x) for x in pes], "tratamientos": [dict(x) for x in trs]}
+    return {"animal": d, "finca": fn, "finca_logo": finca_logo, "pesajes": [dict(x) for x in pes], "tratamientos": [dict(x) for x in trs]}
 
 # ---------------- finca (caracterización) ----------------
 @app.get("/finca")
 def get_finca(u=Depends(usuario_actual)):
     with engine.begin() as con:
-        row = con.execute(text("SELECT id,nombre,municipio,vereda,area_ha,plan,caracterizacion FROM hato.fincas WHERE id=:f"),
+        row = con.execute(text("SELECT id,nombre,municipio,vereda,area_ha,plan,caracterizacion,logo_url FROM hato.fincas WHERE id=:f"),
                           {"f": u["finca_id"]}).mappings().first()
         est = _estado_finca(con, u["finca_id"])
     d = dict(row) if row else {}
@@ -379,9 +383,10 @@ def put_finca(d: FincaIn, u=Depends(usuario_escritura)):
     with engine.begin() as con:
         con.execute(text("""UPDATE hato.fincas SET
               nombre=COALESCE(NULLIF(:n,''),nombre), municipio=COALESCE(:m,municipio),
-              area_ha=COALESCE(:a,area_ha), caracterizacion=COALESCE(:c,caracterizacion)
+              area_ha=COALESCE(:a,area_ha), caracterizacion=COALESCE(:c,caracterizacion),
+              logo_url=COALESCE(:logo,logo_url)
               WHERE id=:f"""),
-              {"n": d.nombre, "m": d.municipio, "a": d.area_ha, "c": d.caracterizacion, "f": u["finca_id"]})
+              {"n": d.nombre, "m": d.municipio, "a": d.area_ha, "c": d.caracterizacion, "logo": d.logo_url, "f": u["finca_id"]})
     return {"ok": True}
 
 # ---------------- autenticación ----------------
