@@ -734,6 +734,13 @@ def admin_activar(d: ActivarIn, _=Depends(_admin)):
                     {"p": nuevo, "f": fid})
     return {"ok": True, "finca_id": str(fid), "pago_hasta": str(nuevo)}
 
+@app.delete("/admin/finca/{finca_id}")
+def admin_borrar_finca(finca_id: str, _=Depends(_admin)):
+    """Borra una finca y TODO lo suyo (usuarios, animales, pesajes, tratamientos, vacunaciones) en cascada."""
+    with engine.begin() as con:
+        con.execute(text("DELETE FROM hato.fincas WHERE id=:f"), {"f": finca_id})
+    return {"ok": True}
+
 class RenombrarIn(BaseModel):
     finca_id: str
     nombre: str
